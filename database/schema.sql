@@ -54,6 +54,7 @@ section_id UUID NOT NULL REFERENCES sections(id) ON DELETE CASCADE,
 batch TEXT,
 mobile TEXT,
 is_team_leader BOOLEAN DEFAULT false,
+current_streak INT DEFAULT 0,
 created_at TIMESTAMP DEFAULT now(),
 updated_at TIMESTAMP DEFAULT now()
 );

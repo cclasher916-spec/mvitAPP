@@ -1,4 +1,8 @@
 import { supabase } from '../lib/supabase'
+import { Database } from '../lib/database.types'
+
+type StudentRow = Database['public']['Tables']['students']['Row']
+type PlatformAccountRow = Database['public']['Tables']['platform_accounts']['Row']
 
 export interface PlatformStats {
     leetcode: number
@@ -6,6 +10,8 @@ export interface PlatformStats {
     codeforces: number
     hackerrank: number
 }
+
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
 export class ScraperService {
     /**
@@ -38,7 +44,6 @@ export class ScraperService {
             })
 
             const data = await response.json()
-            // Improved error handling for LeetCode response structure
             if (data.errors) {
                 console.error('LeetCode API errors:', data.errors)
                 return 0
@@ -70,16 +75,21 @@ export class ScraperService {
     }
 
     /**
-    * Fetch solved count from Codeforces API
+    * Fetch solved count from Codeforces API (Unique accepted problems)
     */
     static async fetchCodeforcesStats(username: string): Promise<number> {
         try {
             const response = await fetch(
-                `https://codeforces.com/api/user.info?handles=${username}`
+                `https://codeforces.com/api/user.status?handle=${username}`
             )
             const data = await response.json()
-            if (data.status === 'OK' && data.result?.length > 0) {
-                return data.result[0].rating || 0
+            if (data.status === 'OK') {
+                const solved = new Set(
+                    data.result
+                        .filter((s: any) => s.verdict === 'OK')
+                        .map((s: any) => `${s.problem.contestId}-${s.problem.index}`)
+                )
+                return solved.size
             }
             return 0
         } catch (error) {
@@ -90,6 +100,8 @@ export class ScraperService {
 
     /**
     * Fetch solved count from HackerRank API
+    * NOTE: HackerRank does not expose solved count cleanly anymore.
+    * This currently returns badges count as an activity indicator.
     */
     static async fetchHackerRankStats(username: string): Promise<number> {
         try {
@@ -97,6 +109,7 @@ export class ScraperService {
                 `https://www.hackerrank.com/rest/hackers/${username}`
             )
             const data = await response.json()
+            // In Phase 1, we use badges as a proxy for activity, or 0 if unreliable
             return data.badges?.length || 0
         } catch (error) {
             console.error('HackerRank scrape error:', error)
@@ -105,136 +118,158 @@ export class ScraperService {
     }
 
     /**
+    * Sync a single student's platform data and update their streak
+    */
+    static async syncStudent(studentId: string, today: string, yesterday: string): Promise<void> {
+        try {
+            // Fetch platform accounts
+            const { data: platforms } = await supabase
+                .from('platform_accounts')
+                .select('*')
+                .eq('student_id', studentId)
+
+            let stats = {
+                leetcode_solved: 0,
+                codechef_solved: 0,
+                codeforces_solved: 0,
+                hackerrank_solved: 0,
+            }
+
+            const platformUpdates: any[] = []
+
+            // Fetch stats from each platform
+            for (const platform of platforms || []) {
+                try {
+                    let solvedCount = 0
+
+                    switch (platform.platform) {
+                        case 'leetcode':
+                            solvedCount = await this.fetchLeetCodeStats(platform.username)
+                            stats.leetcode_solved = solvedCount
+                            break
+                        case 'codechef':
+                            solvedCount = await this.fetchCodeChefStats(platform.username)
+                            stats.codechef_solved = solvedCount
+                            break
+                        case 'codeforces':
+                            solvedCount = await this.fetchCodeforcesStats(platform.username)
+                            stats.codeforces_solved = solvedCount
+                            break
+                        case 'hackerrank':
+                            solvedCount = await this.fetchHackerRankStats(platform.username)
+                            stats.hackerrank_solved = solvedCount
+                            break
+                    }
+
+                    // Collect update for platform_accounts
+                    platformUpdates.push({
+                        id: platform.id,
+                        last_synced_at: new Date().toISOString()
+                    })
+                } catch (error) {
+                    console.error(`Error syncing ${platform.platform} for ${studentId}:`, error)
+                }
+            }
+
+            // Batch update platform accounts
+            if (platformUpdates.length > 0) {
+                // Perform individual updates to avoid type issues with batch upsert on specific fields
+                for (const update of platformUpdates) {
+                    await supabase
+                        .from('platform_accounts')
+                        .update({ last_synced_at: update.last_synced_at })
+                        .eq('id', (update as any).id)
+                }
+            }
+
+            const totalSolved =
+                stats.leetcode_solved +
+                stats.codechef_solved +
+                stats.codeforces_solved +
+                stats.hackerrank_solved
+
+            // --- STREAK CALCULATION LOGIC ---
+            // 1. Get student's previous streak and yesterday's activity
+            const [{ data: studentData }, { data: yesterdayActivity }] = await Promise.all([
+                supabase.from('students').select('current_streak').eq('id', studentId).maybeSingle(),
+                supabase.from('daily_activity').select('is_active').eq('student_id', studentId).eq('activity_date', yesterday).maybeSingle()
+            ])
+
+            let newStreak = (studentData as any)?.current_streak || 0
+
+            if (totalSolved > 0) {
+                // Active today
+                if ((yesterdayActivity as any)?.is_active) {
+                    // Active yesterday + Active today = Increment
+                    newStreak += 1
+                } else {
+                    // Not active yesterday (or first activity) -> Start new streak
+                    newStreak = 1
+                }
+            } else {
+                // Inactive today
+                if (yesterdayActivity && !(yesterdayActivity as any).is_active) {
+                    // Inactive yesterday AND Inactive today -> Break streak
+                    newStreak = 0
+                }
+            }
+
+            // Update student's streak
+            await supabase
+                .from('students')
+                .update({ current_streak: newStreak })
+                .eq('id', studentId)
+
+            // Upsert daily activity
+            await supabase
+                .from('daily_activity')
+                .upsert({
+                    student_id: studentId,
+                    activity_date: today,
+                    leetcode_solved: stats.leetcode_solved,
+                    codechef_solved: stats.codechef_solved,
+                    codeforces_solved: stats.codeforces_solved,
+                    hackerrank_solved: stats.hackerrank_solved,
+                    total_solved: totalSolved,
+                    is_active: totalSolved > 0,
+                    updated_at: new Date().toISOString(),
+                })
+
+        } catch (error) {
+            console.error(`Unexpected error in syncStudent for ${studentId}:`, error)
+        }
+    }
+
+    /**
     * Daily scraper job - Run this every day to update activity
-    * In production, use GitHub Actions or Supabase Cron
+    * Uses batching to avoid API rate limits and improve performance
     */
     static async runDailySync(): Promise<void> {
         try {
             console.log('Starting daily sync...')
 
-            // Get all students with connected platforms
             const { data: students, error: studentsError } = await supabase
                 .from('students')
                 .select('id')
 
             if (studentsError) throw studentsError
+            if (!students || students.length === 0) return
 
             const today = new Date().toISOString().split('T')[0]
+            const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0]
 
-            for (const student of students || []) {
-                // Fetch platform accounts
-                const { data: platforms } = await supabase
-                    .from('platform_accounts')
-                    .select('*')
-                    .eq('student_id', student.id)
+            const BATCH_SIZE = 10
+            for (let i = 0; i < students.length; i += BATCH_SIZE) {
+                const batch = students.slice(i, i + BATCH_SIZE)
+                console.log(`Syncing batch ${i / BATCH_SIZE + 1} (${batch.length} students)...`)
 
-                let stats = {
-                    leetcode_solved: 0,
-                    codechef_solved: 0,
-                    codeforces_solved: 0,
-                    hackerrank_solved: 0,
-                }
+                await Promise.all(
+                    batch.map(student => this.syncStudent(student.id, today, yesterday))
+                )
 
-                // Fetch stats from each platform
-                for (const platform of platforms || []) {
-                    try {
-                        let solvedCount = 0
-
-                        switch (platform.platform) {
-                            case 'leetcode':
-                                solvedCount = await this.fetchLeetCodeStats(platform.username)
-                                stats.leetcode_solved = solvedCount
-                                break
-                            case 'codechef':
-                                solvedCount = await this.fetchCodeChefStats(platform.username)
-                                stats.codechef_solved = solvedCount
-                                break
-                            case 'codeforces':
-                                solvedCount = await this.fetchCodeforcesStats(platform.username)
-                                stats.codeforces_solved = solvedCount
-                                break
-                            case 'hackerrank':
-                                solvedCount = await this.fetchHackerRankStats(platform.username)
-                                stats.hackerrank_solved = solvedCount
-                                break
-                        }
-
-                        // Update last_synced_at
-                        await supabase
-                            .from('platform_accounts')
-                            .update({ last_synced_at: new Date().toISOString() })
-                            .eq('id', platform.id)
-                    } catch (error) {
-                        console.error(
-                            `Error syncing ${platform.platform} for ${student.id}:`,
-                            error
-                        )
-                    }
-                }
-
-                // Calculate total solved
-                const totalSolved =
-                    stats.leetcode_solved +
-                    stats.codechef_solved +
-                    stats.codeforces_solved +
-                    stats.hackerrank_solved
-
-                // --- STREAK CALCULATION LOGIC ---
-                // 1. Get yesterday's activity
-                const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0]
-                let newStreak = 0
-
-                // Check if student was active yesterday
-                if (totalSolved > 0) {
-                    const { data: yesterdayActivity } = await supabase
-                        .from('daily_activity')
-                        .select('is_active')
-                        .eq('student_id', student.id)
-                        .eq('activity_date', yesterday)
-                        .single()
-
-                    // Get current streak from students table
-                    const { data: studentData } = await supabase
-                        .from('students')
-                        .select('current_streak')
-                        .eq('id', student.id)
-                        .single()
-
-                    const currentStreak = studentData?.current_streak || 0
-
-                    if (yesterdayActivity?.is_active) {
-                        // Active yesterday + Active today = Increment
-                        newStreak = currentStreak + 1
-                    } else if (currentStreak > 0) {
-                        // Not active yesterday - Reset streak?
-                        newStreak = 1
-                    } else {
-                        newStreak = 1
-                    }
-                } else {
-                    newStreak = 0
-                }
-
-                // Update student's streak
-                await supabase
-                    .from('students')
-                    .update({ current_streak: newStreak })
-                    .eq('id', student.id)
-
-                // Upsert daily activity
-                const { error: activityError } = await supabase
-                    .from('daily_activity')
-                    .upsert({
-                        student_id: student.id,
-                        activity_date: today,
-                        ...stats,
-                        total_solved: totalSolved,
-                        is_active: totalSolved > 0,
-                        updated_at: new Date().toISOString(),
-                    })
-
-                if (activityError) {
-                    console.error('Error updating activity for', student.id, activityError)
+                // Safety sleep between batches
+                if (i + BATCH_SIZE < students.length) {
+                    await sleep(500)
                 }
             }
 
@@ -249,32 +284,51 @@ export class ScraperService {
 
     /**
     * Update leaderboard rankings
+    * Pre-fetches streaks to avoid N+1 query problem
     */
     static async updateLeaderboards(): Promise<void> {
         try {
-            // Get all daily activity for today
             const today = new Date().toISOString().split('T')[0]
-            const { data: activities } = await supabase
+
+            // 1. Get all daily activity for today
+            const { data: activities, error: activityError } = await supabase
                 .from('daily_activity')
-                .select('*')
+                .select('student_id, total_solved')
                 .eq('activity_date', today)
                 .order('total_solved', { ascending: false })
 
+            if (activityError) throw activityError
             if (!activities || activities.length === 0) return
 
-            // Update college leaderboard
-            for (let i = 0; i < activities.length; i++) {
-                await supabase.from('leaderboard_cache').upsert({
-                    student_id: activities[i].student_id,
-                    rank_type: 'college',
-                    period: 'daily',
-                    rank: i + 1,
-                    total_solved: activities[i].total_solved,
-                    // Add streak to cache
-                    streak: (await this.getStudentStreak(activities[i].student_id)),
-                    last_updated: new Date().toISOString()
-                })
-            }
+            // 2. Pre-fetch streaks for all students in this leaderboard
+            const studentIds = activities.map(a => a.student_id)
+            const { data: students, error: streakError } = await supabase
+                .from('students')
+                .select('id, current_streak')
+                .in('id', studentIds)
+
+            if (streakError) throw streakError
+
+            // Map student IDs to streaks for quick lookup
+            const streakMap = new Map(students?.map(s => [s.id, s.current_streak]) || [])
+
+            // 3. Prepare leaderboard cache updates
+            const cacheUpdates = activities.map((activity, index) => ({
+                student_id: activity.student_id,
+                rank_type: 'college',
+                period: 'daily',
+                rank: index + 1,
+                total_solved: activity.total_solved,
+                streak: streakMap.get(activity.student_id) || 0,
+                last_updated: new Date().toISOString()
+            }))
+
+            // 4. Batch upsert leaderboard cache
+            const { error: upsertError } = await (supabase
+                .from('leaderboard_cache') as any)
+                .upsert(cacheUpdates)
+
+            if (upsertError) throw upsertError
 
             console.log('Leaderboard updated!')
         } catch (error) {
@@ -282,9 +336,9 @@ export class ScraperService {
         }
     }
 
-    // Helper to get streak
+    // Helper to get streak (kept for backwards compatibility if needed elsewhere)
     static async getStudentStreak(studentId: string): Promise<number> {
-        const { data } = await supabase.from('students').select('current_streak').eq('id', studentId).single()
+        const { data } = await supabase.from('students').select('current_streak').eq('id', studentId).maybeSingle()
         return data?.current_streak || 0
     }
 }
