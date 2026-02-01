@@ -66,7 +66,21 @@ export class ScraperService {
     static async fetchCodeChefStats(username: string): Promise<number> {
         try {
             const response = await fetch(`https://codechef-api.vercel.app/${username}`)
-            const data = await response.json()
+
+            if (!response.ok) {
+                console.warn(`CodeChef HTTP error for ${username}: ${response.status}`)
+                return 0
+            }
+
+            const text = await response.text()
+
+            // Guard against non-JSON responses
+            if (!text.startsWith('{')) {
+                console.warn(`CodeChef non-JSON response for ${username}:`, text)
+                return 0
+            }
+
+            const data = JSON.parse(text)
             return data.totalSolved || 0
         } catch (error) {
             console.error('CodeChef scrape error:', error)
@@ -139,39 +153,41 @@ export class ScraperService {
 
             const platformUpdates: Database['public']['Tables']['platform_accounts']['Update'][] = []
 
-            // Fetch stats from each platform
-            for (const platform of (platforms as PlatformAccountRow[]) || []) {
-                try {
-                    let solvedCount = 0
+            // Fetch stats from each platform in parallel
+            await Promise.all(
+                ((platforms as PlatformAccountRow[]) || []).map(async platform => {
+                    try {
+                        let solvedCount = 0
 
-                    switch (platform.platform) {
-                        case 'leetcode':
-                            solvedCount = await this.fetchLeetCodeStats(platform.username)
-                            stats.leetcode_solved = solvedCount
-                            break
-                        case 'codechef':
-                            solvedCount = await this.fetchCodeChefStats(platform.username)
-                            stats.codechef_solved = solvedCount
-                            break
-                        case 'codeforces':
-                            solvedCount = await this.fetchCodeforcesStats(platform.username)
-                            stats.codeforces_solved = solvedCount
-                            break
-                        case 'hackerrank':
-                            solvedCount = await this.fetchHackerRankStats(platform.username)
-                            stats.hackerrank_solved = solvedCount
-                            break
+                        switch (platform.platform) {
+                            case 'leetcode':
+                                solvedCount = await this.fetchLeetCodeStats(platform.username)
+                                stats.leetcode_solved = solvedCount
+                                break
+                            case 'codechef':
+                                solvedCount = await this.fetchCodeChefStats(platform.username)
+                                stats.codechef_solved = solvedCount
+                                break
+                            case 'codeforces':
+                                solvedCount = await this.fetchCodeforcesStats(platform.username)
+                                stats.codeforces_solved = solvedCount
+                                break
+                            case 'hackerrank':
+                                solvedCount = await this.fetchHackerRankStats(platform.username)
+                                stats.hackerrank_solved = solvedCount
+                                break
+                        }
+
+                        // Collect update for platform_accounts
+                        platformUpdates.push({
+                            id: platform.id,
+                            last_synced_at: new Date().toISOString()
+                        })
+                    } catch (error) {
+                        console.error(`Error syncing ${platform.platform} for ${studentId}:`, error)
                     }
-
-                    // Collect update for platform_accounts
-                    platformUpdates.push({
-                        id: platform.id,
-                        last_synced_at: new Date().toISOString()
-                    })
-                } catch (error) {
-                    console.error(`Error syncing ${platform.platform} for ${studentId}:`, error)
-                }
-            }
+                })
+            )
 
             // Batch update platform accounts
             if (platformUpdates.length > 0) {
