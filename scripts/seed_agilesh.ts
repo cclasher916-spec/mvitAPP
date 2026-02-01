@@ -43,7 +43,7 @@ async function seedUser() {
 
     // Find user by email OR by roll number pattern (handles migration from old emails like Gmail)
     const existingUser = existingUsers.users.find(
-        u => u.email === email || u.email?.startsWith(`${rollNo}@`)
+        (u: any) => u.email === email || u.email?.startsWith(`${rollNo}@`)
     )
 
     if (existingUser) {
@@ -217,7 +217,7 @@ async function seedUser() {
     ]
 
     for (const p of platforms) {
-        const { error: pError } = await supabaseAdmin.from('platform_accounts').upsert({
+        const { error: pError } = await (supabaseAdmin.from('platform_accounts') as any).upsert({
             student_id: student.id,
             platform: p.platform as any,
             username: p.username,

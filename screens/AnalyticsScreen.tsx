@@ -9,12 +9,30 @@ import {
 } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { MaterialCommunityIcons } from '@expo/vector-icons'
-import { supabase } from '../lib/supabase'
+import { supabase, Database } from '../lib/supabase'
+
+type DailyActivity = Database['public']['Tables']['daily_activity']['Row']
+
+interface AnalyticsStats {
+    total: number
+    leetcode: number
+    codechef: number
+    codeforces: number
+    hackerrank: number
+    weeklyData: DailyActivity[]
+}
+
+interface PlatformBreakdownItem {
+    name: string
+    value: number
+    color: string
+    width: number
+}
 
 export default function AnalyticsScreen({ navigation }: any) {
     const [loading, setLoading] = useState(true)
-    const [stats, setStats] = useState<any>(null)
-    const [platformBreakdown, setPlatformBreakdown] = useState<any[]>([])
+    const [stats, setStats] = useState<AnalyticsStats | null>(null)
+    const [platformBreakdown, setPlatformBreakdown] = useState<PlatformBreakdownItem[]>([])
 
     useEffect(() => {
         fetchAnalytics()
@@ -25,11 +43,11 @@ export default function AnalyticsScreen({ navigation }: any) {
             const { data: { user } } = await supabase.auth.getUser()
             if (!user) return
 
-            const { data: student } = await supabase
+            const { data: student } = await (supabase
                 .from('students')
                 .select('id')
                 .eq('user_id', user.id)
-                .single()
+                .maybeSingle() as any)
 
             if (!student) return
 
@@ -51,7 +69,9 @@ export default function AnalyticsScreen({ navigation }: any) {
             let codeforces = 0
             let hackerrank = 0
 
-            weeklyActivity?.forEach(day => {
+            const activities = (weeklyActivity as DailyActivity[]) || []
+
+            activities.forEach(day => {
                 total += day.total_solved
                 leetcode += day.leetcode_solved
                 codechef += day.codechef_solved
@@ -65,7 +85,7 @@ export default function AnalyticsScreen({ navigation }: any) {
                 codechef,
                 codeforces,
                 hackerrank,
-                weeklyData: weeklyActivity || []
+                weeklyData: activities
             })
 
             // Prepare breakdown for charts

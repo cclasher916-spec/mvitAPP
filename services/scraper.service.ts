@@ -123,10 +123,12 @@ export class ScraperService {
     static async syncStudent(studentId: string, today: string, yesterday: string): Promise<void> {
         try {
             // Fetch platform accounts
-            const { data: platforms } = await supabase
+            const { data: platforms, error: platformsError } = await supabase
                 .from('platform_accounts')
                 .select('*')
                 .eq('student_id', studentId)
+
+            if (platformsError) throw platformsError
 
             let stats = {
                 leetcode_solved: 0,
@@ -135,10 +137,10 @@ export class ScraperService {
                 hackerrank_solved: 0,
             }
 
-            const platformUpdates: any[] = []
+            const platformUpdates: Database['public']['Tables']['platform_accounts']['Update'][] = []
 
             // Fetch stats from each platform
-            for (const platform of platforms || []) {
+            for (const platform of (platforms as PlatformAccountRow[]) || []) {
                 try {
                     let solvedCount = 0
 
@@ -173,12 +175,14 @@ export class ScraperService {
 
             // Batch update platform accounts
             if (platformUpdates.length > 0) {
-                // Perform individual updates to avoid type issues with batch upsert on specific fields
+                // Perform updates
                 for (const update of platformUpdates) {
-                    await supabase
-                        .from('platform_accounts')
-                        .update({ last_synced_at: update.last_synced_at })
-                        .eq('id', (update as any).id)
+                    if (update.id) {
+                        await (supabase
+                            .from('platform_accounts') as any)
+                            .update({ last_synced_at: update.last_synced_at })
+                            .eq('id', update.id)
+                    }
                 }
             }
 
@@ -215,14 +219,14 @@ export class ScraperService {
             }
 
             // Update student's streak
-            await supabase
-                .from('students')
+            await (supabase
+                .from('students') as any)
                 .update({ current_streak: newStreak })
                 .eq('id', studentId)
 
             // Upsert daily activity
-            await supabase
-                .from('daily_activity')
+            await (supabase
+                .from('daily_activity') as any)
                 .upsert({
                     student_id: studentId,
                     activity_date: today,
@@ -259,8 +263,8 @@ export class ScraperService {
             const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0]
 
             const BATCH_SIZE = 10
-            for (let i = 0; i < students.length; i += BATCH_SIZE) {
-                const batch = students.slice(i, i + BATCH_SIZE)
+            for (let i = 0; i < (students as any[]).length; i += BATCH_SIZE) {
+                const batch = (students as any[]).slice(i, i + BATCH_SIZE)
                 console.log(`Syncing batch ${i / BATCH_SIZE + 1} (${batch.length} students)...`)
 
                 await Promise.all(
@@ -268,7 +272,7 @@ export class ScraperService {
                 )
 
                 // Safety sleep between batches
-                if (i + BATCH_SIZE < students.length) {
+                if (i + BATCH_SIZE < (students as any[]).length) {
                     await sleep(500)
                 }
             }
@@ -298,10 +302,10 @@ export class ScraperService {
                 .order('total_solved', { ascending: false })
 
             if (activityError) throw activityError
-            if (!activities || activities.length === 0) return
+            if (!activities || (activities as any[]).length === 0) return
 
             // 2. Pre-fetch streaks for all students in this leaderboard
-            const studentIds = activities.map(a => a.student_id)
+            const studentIds = (activities as any[]).map(a => a.student_id)
             const { data: students, error: streakError } = await supabase
                 .from('students')
                 .select('id, current_streak')
@@ -310,10 +314,10 @@ export class ScraperService {
             if (streakError) throw streakError
 
             // Map student IDs to streaks for quick lookup
-            const streakMap = new Map(students?.map(s => [s.id, s.current_streak]) || [])
+            const streakMap = new Map((students as any[])?.map(s => [s.id, s.current_streak]) || [])
 
             // 3. Prepare leaderboard cache updates
-            const cacheUpdates = activities.map((activity, index) => ({
+            const cacheUpdates = (activities as any[]).map((activity, index) => ({
                 student_id: activity.student_id,
                 rank_type: 'college',
                 period: 'daily',
@@ -339,7 +343,7 @@ export class ScraperService {
     // Helper to get streak (kept for backwards compatibility if needed elsewhere)
     static async getStudentStreak(studentId: string): Promise<number> {
         const { data } = await supabase.from('students').select('current_streak').eq('id', studentId).maybeSingle()
-        return data?.current_streak || 0
+        return (data as any)?.current_streak || 0
     }
 }
 
