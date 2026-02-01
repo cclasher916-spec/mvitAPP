@@ -2,13 +2,16 @@ import { createClient } from '@supabase/supabase-js'
 import { Database } from '../lib/database.types'
 import 'dotenv/config'
 
-// Re-using config from lib/supabase.ts (for anon client)
-const supabaseUrl = process.env.SUPABASE_URL || 'https://rwrmcovajrgcqwyrztqz.supabase.co'
-const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ3cm1jb3ZhanJnY3F3eXJ6dHF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk2NzIxNDMsImV4cCI6MjA4NTI0ODE0M30.maf_ZnhHOmP8SaTrPvM_-mZiHtGunO4D_rvWyYhEM9I'
-const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+// Load environment variables (handling both Expo and standard Node environments)
+const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || ''
+const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || ''
+const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || ''
 
-if (!supabaseServiceRoleKey) {
-    console.error('SERVER_ROLE_KEY is missing in .env')
+if (!supabaseUrl || !supabaseAnonKey || !supabaseServiceRoleKey) {
+    console.error('Missing required environment variables in .env')
+    console.log('Required: EXPO_PUBLIC_SUPABASE_URL or SUPABASE_URL')
+    console.log('Required: EXPO_PUBLIC_SUPABASE_ANON_KEY or SUPABASE_ANON_KEY')
+    console.log('Required: SUPABASE_SERVICE_ROLE_KEY')
     process.exit(1)
 }
 
