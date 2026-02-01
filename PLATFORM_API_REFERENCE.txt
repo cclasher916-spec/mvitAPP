@@ -1,0 +1,226 @@
+================================================================================
+PLATFORM API REFERENCE - SOLVED COUNT FETCHING
+================================================================================
+
+1. LEETCODE
+================================================================================
+Method: GraphQL API
+Authentication: None required (public API)
+Endpoint: https://leetcode.com/graphql
+
+Query Example:
+{
+"query": "query getUserProfile($username: String!) { matchedUser(username: $username) { problemsSolvedBeatsStats { solvedProblems } } }",
+"variables": { "username": "yourUsername" }
+}
+
+Response:
+{
+"data": {
+"matchedUser": {
+"problemsSolvedBeatsStats": {
+"solvedProblems": 150
+}
+}
+}
+}
+
+Rate Limit: ~100 requests/minute
+Status: ✓ Working (tested)
+Implementation: services/scraper.service.ts - fetchLeetCodeStats()
+
+2. CODECHEF
+================================================================================
+Method: REST API (via third-party service)
+Authentication: None required
+Endpoint: https://codechef-api.vercel.app/{username}
+
+Example:
+GET https://codechef-api.vercel.app/gamer_001
+
+Response:
+{
+"username": "gamer_001",
+"firstName": "Gamer",
+"lastName": "Dev",
+"totalSolved": 145,
+"rating": 1567,
+...
+}
+
+Rate Limit: 100 requests/minute
+Status: ✓ Working (third-party API)
+Implementation: services/scraper.service.ts - fetchCodeChefStats()
+
+3. CODEFORCES
+================================================================================
+Method: REST API (official)
+Authentication: None required (public)
+Endpoint: https://codeforces.com/api/
+
+Query:
+GET https://codeforces.com/api/user.info?handles=handle_name
+
+Response:
+{
+"status": "OK",
+"result": [
+{
+"handle": "handle_name",
+"rating": 1850,
+"maxRating": 1900,
+...
+}
+]
+}
+
+Alternative (get solved problems):
+GET https://codeforces.com/api/user.status?handle=handle_name&count=1000
+
+Rate Limit: 1 request per 2 seconds per IP
+Status: ✓ Working (official API)
+Implementation: services/scraper.service.ts - fetchCodeforcesStats()
+Note: Currently fetching rating, should fetch solved count
+
+4. HACKERRANK
+================================================================================
+Method: REST API / HTML Scraping
+Authentication: None required (public)
+Endpoint: https://www.hackerrank.com/rest/hackers/{username}
+
+Example:
+GET https://www.hackerrank.com/rest/hackers/john_doe
+
+Response:
+{
+"username": "john_doe",
+"badges": [...],
+"solved": 234,
+...
+}
+
+Rate Limit: Rate limited (exact limits unknown)
+Status: ⚠ May require updates
+Implementation: services/scraper.service.ts - fetchHackerRankStats()
+
+5. GITHUB (Optional)
+================================================================================
+For future: Track contributions, repositories, languages
+Endpoint: https://api.github.com/users/{username}
+Implementation: Optional for Phase 2+
+
+================================================================================
+ERROR HANDLING STRATEGY
+================================================================================
+
+1. Network Errors:
+- Retry up to 3 times with exponential backoff
+- If all fail, use last cached value
+- Log error for monitoring
+
+2. Rate Limit Errors:
+- Wait and retry (implement exponential backoff)
+- Spread requests across the day
+- Implement request queue
+
+3. Invalid Username:
+- Skip for that platform
+- Notify student to update username
+- Mark as "not connected"
+
+4. API Changes:
+- Monitor for API updates
+- Test endpoints weekly
+- Have fallback endpoints ready
+
+================================================================================
+IMPROVEMENT OPPORTUNITIES
+================================================================================
+
+1. LeetCode:
+- Current: Problems solved only
+- Future: Include rating, contests, acceptance rate
+
+2. CodeChef:
+- Current: Total solved count
+- Future: Rating changes, contest participation
+
+3. Codeforces:
+- Current: Rating
+- Improvement: Fetch problem count (via user.status)
+- Add: Contest rank tracking
+
+4. HackerRank:
+- Current: Badge count
+- Future: Problem count, skills, certificates
+
+5. General:
+- Add daily delta tracking (how many problems solved today)
+- Track streak logic
+- Calculate accuracy/pass rates
+
+================================================================================
+TESTING ENDPOINTS
+================================================================================
+
+Test these endpoints to verify they work:
+
+1. LeetCode (GraphQL):
+curl -X POST https://leetcode.com/graphql \
+-H "Content-Type: application/json" \
+-d '{"query":"query{matchedUser(username:\"lctest\"){problemsSolvedBeatsStats{solvedProblems}}}"}'
+
+2. CodeChef:
+curl https://codechef-api.vercel.app/codechef_dev
+
+3. Codeforces:
+curl https://codeforces.com/api/user.info?handles=tourist
+
+4. HackerRank:
+curl https://www.hackerrank.com/rest/hackers/skaushik
+
+================================================================================
+PERFORMANCE TIPS
+================================================================================
+
+1. Batching:
+- Fetch 10 students per batch
+- Wait 5 seconds between batches
+- Total time for 700 students: ~10 minutes
+
+2. Caching:
+- Cache results for 24 hours
+- Update during scheduled job only
+- Reduce redundant API calls
+
+3. Parallel Requests:
+- Fetch all 4 platforms in parallel per student
+- Use Promise.all() for speed
+
+4. Retry Logic:
+- Max retries: 3
+- Backoff: 1s, 2s, 4s
+- Finally: Use last known value
+
+================================================================================
+MONITORING & LOGGING
+================================================================================
+
+Track these metrics:
+- Successful syncs: daily_activity.last_synced_at
+- Failed platforms: Log to file
+- API response times
+- Rate limit hits
+- Data accuracy vs manual checks
+
+Log file locations (when implemented):
+- Success: /logs/sync-success-{date}.log
+- Errors: /logs/sync-errors-{date}.log
+
+Alert conditions:
+- Sync takes >30 minutes
+- >10% of students fail to sync
+- API returns invalid data
+- Database connection fails
+
+================================================================================

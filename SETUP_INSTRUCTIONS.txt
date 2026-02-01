@@ -1,0 +1,207 @@
+================================================================================
+MVIT CODING TRACKER - PHASE 1 SETUP INSTRUCTIONS
+================================================================================
+
+PROJECT STATUS: Phase 1 - Core Tracking Engine (In Development)
+
+COMPLETED:
+✓ Database schema designed (10 tables with RLS)
+✓ Supabase client configured
+✓ Auth service with Roll No + Password login
+✓ Login screen (React Native)
+✓ Student dashboard (React Native)
+✓ Platform scraper service (LeetCode, CodeChef, Codeforces, HackerRank)
+✓ Daily sync logic
+
+IMMEDIATE NEXT STEPS:
+================================================================================
+
+1. APPLY DATABASE SCHEMA
+- Go to https://app.supabase.com
+- Select project: rwrmcovajrgcqwyrztqz
+- Navigate to SQL Editor
+- Open new query
+- Copy entire contents of: /project/database/schema.sql
+- Run the query
+- Wait for tables to be created
+
+2. TEST THE MOBILE APP
+- Run: npm run ios (or android)
+- Try login with test credentials (you'll need to create test data first)
+
+3. POPULATE TEST DATA
+Once schema is applied, run this in Supabase SQL Editor to create a test department:
+
+INSERT INTO departments (name, code) 
+VALUES ('Computer Science', 'CS');
+
+SELECT * FROM departments;  -- Get the department_id
+
+Then create a test year, section, and student.
+
+4. CREATE TEST STUDENT ACCOUNT
+- In Supabase Auth, create a user with email: roll_001@mvit.student
+- Set password to something simple like: password123
+- Then create corresponding student record in students table
+
+5. SETUP DAILY SCRAPER (Phase 1 Manual, Phase 2+ Automated)
+- For MVP, manually call ScraperService.runDailySync()
+- For production, set up GitHub Actions (see SCHEDULER_SETUP.md)
+
+================================================================================
+ARCHITECTURE OVERVIEW
+================================================================================
+
+FRONTEND:
+- React Native (Expo) for mobile app
+- Next.js for web dashboards (separate repo)
+
+BACKEND:
+- Supabase PostgreSQL database
+- Row Level Security (RLS) for data protection
+- Edge Functions for API endpoints (optional)
+
+DATABASE SCHEMA:
+- users (auth + roles)
+- departments, years, sections (org structure)
+- students (student profiles)
+- teams, team_members (team tracking)
+- platform_accounts (LeetCode, CodeChef, etc.)
+- daily_activity (solved count per day)
+- leaderboard_cache (rankings)
+
+================================================================================
+FILE STRUCTURE
+================================================================================
+
+/project/
+├── lib/
+│   ├── supabase.ts          ✓ Supabase client
+│   └── database.types.ts    ✓ TypeScript types
+├── services/
+│   ├── auth.service.ts      ✓ Authentication logic
+│   └── scraper.service.ts   ✓ Daily sync + platform fetching
+├── screens/
+│   ├── LoginScreen.tsx      ✓ Login UI
+│   └── StudentDashboard.tsx ✓ Student dashboard UI
+├── database/
+│   └── schema.sql           ✓ Database schema
+├── App.tsx                  ✓ Main app with navigation
+└── app.json                 ✓ Expo config
+
+================================================================================
+AUTHENTICATION FLOW
+================================================================================
+
+1. Student enters Roll No (e.g., "CS001")
+2. System converts to email: "cs001@mvit.student"
+3. Supabase Auth handles password verification
+4. On first login, student must change password
+5. Session stored locally for offline support
+6. Logout clears session
+
+PASSWORD MANAGEMENT:
+- Initial password provided by HOD (e.g., DOB or last 4 digits of phone)
+- Student must change on first login
+- Supabase handles password reset via email
+
+================================================================================
+PLATFORM INTEGRATION
+================================================================================
+
+SUPPORTED PLATFORMS:
+1. LeetCode - GraphQL API (public, no auth)
+2. CodeChef - REST API (public)
+3. Codeforces - REST API (public)
+4. HackerRank - HTML scraping
+5. GitHub - (optional, for future features)
+
+SYNC PROCESS:
+- Student connects accounts via mobile app
+- Daily job fetches stats from each platform
+- Stores in daily_activity table
+- Updates leaderboard cache
+- Notifications sent if needed (Phase 2+)
+
+API LIMITS:
+- LeetCode: GraphQL rate limiting (~100 req/min)
+- CodeChef: 100 req/min
+- Codeforces: Public API limits
+- HackerRank: Rate limited
+
+================================================================================
+CURRENT LIMITATIONS & PHASE 2 IMPROVEMENTS
+================================================================================
+
+PHASE 1 (Current):
+✓ Student login via Roll No
+✓ Platform connection
+✓ Daily activity tracking
+✓ Basic leaderboards
+✓ Offline support
+
+PHASE 2 (Next):
+- Platform connection UI in mobile app
+- Daily activity UI improvements
+- Team creation & management
+- Team leaderboards
+- In-app notifications
+
+PHASE 3 (HOD Dashboard):
+- Web dashboard (Next.js)
+- Department analytics
+- Student performance reports
+- Inactive student alerts
+- Export to Excel/PDF
+
+PHASE 4 (Placement Cell):
+- College-wide analytics
+- Top 100 coders list
+- Placement readiness scoring
+- Power BI integration
+
+================================================================================
+TESTING CHECKLIST
+================================================================================
+
+Before deploying to production:
+
+[ ] Database schema applied successfully
+[ ] Can login with test student account
+[ ] Student dashboard loads correctly
+[ ] Platform connection works (if UI added)
+[ ] Daily scraper fetches data without errors
+[ ] Leaderboard updates correctly
+[ ] RLS policies prevent unauthorized access
+[ ] Logout works and clears session
+[ ] Works offline (after first login)
+
+================================================================================
+DEPLOYMENT STEPS
+================================================================================
+
+1. Frontend (Expo):
+- Click "Deploy" button (top-right, desktop)
+- Select "Expo" or "Build"
+- Choose platform (iOS/Android)
+
+2. Backend (Supabase):
+- Already live at: https://rwrmcovajrgcqwyrztqz.supabase.co
+- No additional deployment needed
+
+3. Scheduler (GitHub Actions):
+- Create .github/workflows/daily-sync.yml
+- Add Supabase secrets to GitHub
+- Enable Actions in repo
+
+================================================================================
+SUPPORT & DOCUMENTATION
+================================================================================
+
+Supabase Docs: https://supabase.com/docs
+React Native: https://reactnative.dev
+Expo: https://docs.expo.dev
+
+Questions? Check DATABASE_SETUP.md and SCHEDULER_SETUP.md
+
+================================================================================
