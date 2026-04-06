@@ -48,7 +48,8 @@ export class AuthService {
           section_id,
           batch,
           mobile,
-          is_team_leader
+          is_team_leader,
+          current_streak
         `
                 )
                 .eq('user_id', data.user.id)
