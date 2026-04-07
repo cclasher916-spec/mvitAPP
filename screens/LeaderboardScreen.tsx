@@ -34,9 +34,8 @@ const TIME_TABS = [
 // Map activeTab + timeTab to the actual DB period value
 const getDbPeriod = (rankType: string, uiTime: string): string => {
     if (uiTime === 'all_time') {
-        // 'college' has both 'overall' and 'all_time'. Use 'all_time' for consistency.
-        // All other rank_types only have 'all_time'.
-        return 'all_time';
+        // SCRAPINGcode.py and the core schema use 'overall' for all-time stats.
+        return 'overall';
     }
     return uiTime; // 'weekly' and 'daily' are the same in both UI and DB
 };
@@ -44,30 +43,59 @@ const getDbPeriod = (rankType: string, uiTime: string): string => {
 export default function LeaderboardScreen({ navigation, route, student: propStudent }: any) {
     const student = propStudent || route.params?.student || {};
 
-    // Smart default tab selection
-    const initialTab = student.team_id ? 'team' :
-        student.section_id ? 'section' :
-            student.department_id ? 'department' : 'college';
-
-    const [activeTab, setActiveTab] = useState(initialTab)
+    const [activeTab, setActiveTab] = useState('college')
     const [timeTab, setTimeTab] = useState('daily')
     const [viewMode, setViewMode] = useState<'top' | 'near_me'>('top')
 
     const [loading, setLoading] = useState(true)
     const [fetchError, setFetchError] = useState<string | null>(null)
     const [leaderboard, setLeaderboard] = useState<any[]>([])
+    // Pre-fetched once on mount — team_id lives in team_members, not students table
+    const [myTeamId, setMyTeamId] = useState<string | null>(undefined as any)
+    const [teamChecked, setTeamChecked] = useState(false)
 
+    // On mount: resolve this student's team membership ONCE
     useEffect(() => {
-        fetchLeaderboard()
-    }, [activeTab, timeTab])
+        const resolveTeam = async () => {
+            if (!student.id) { setTeamChecked(true); return; }
+            try {
+                const { data, error } = await supabase
+                    .from('team_members')
+                    .select('team_id')
+                    .eq('student_id', student.id)
+                    .maybeSingle();
+                if (error) throw error;
+                setMyTeamId((data as any)?.team_id || null);
+            } catch (e) {
+                console.warn('Team lookup failed:', e);
+                setMyTeamId(null);
+            } finally {
+                setTeamChecked(true);
+            }
+        };
+        resolveTeam();
+    }, [student.id]);
+
+    // Fetch leaderboard whenever tab or time changes (after team check is done)
+    useEffect(() => {
+        if (!teamChecked) return; // Wait until team membership is resolved
+        fetchLeaderboard();
+    }, [activeTab, timeTab, teamChecked]);
 
     const fetchLeaderboard = async () => {
-        setLoading(true)
-        setFetchError(null)
+        setLoading(true);
+        setFetchError(null);
         try {
             const dbPeriod = getDbPeriod(activeTab, timeTab);
 
-            let query = supabase
+            // For team tab: if student has no team, skip the fetch entirely
+            if (activeTab === 'team' && !myTeamId) {
+                setLeaderboard([]);
+                setLoading(false);
+                return;
+            }
+
+            const { data: rawData, error } = await supabase
                 .from('leaderboard_cache')
                 .select(`
                     rank,
@@ -88,57 +116,86 @@ export default function LeaderboardScreen({ navigation, route, student: propStud
                 .eq('period', dbPeriod)
                 .order('rank', { ascending: true });
 
-            const { data: rawData, error } = await query;
             if (error) throw error;
 
-            // Cast to any[] — Supabase can't infer deeply nested join shapes without generated DB types
-            const data = (rawData || []) as any[];
+            // Cast to any[] - Supabase can't infer deeply nested join shapes without generated DB types
+            let data = (rawData || []) as any[];
+
+            // FALLBACK LOGIC: If specific rank_type cache is empty, fallback to 'college' and filter locally
+            if (data.length === 0 && activeTab !== 'college') {
+                const { data: fallbackData, error: fallbackError } = await supabase
+                    .from('leaderboard_cache')
+                    .select(`
+                        rank,
+                        previous_rank,
+                        total_solved,
+                        streak,
+                        student_id,
+                        student:students (
+                            name,
+                            roll_no,
+                            department_id,
+                            year_id,
+                            section_id,
+                            department:departments(code)
+                        )
+                    `)
+                    .eq('rank_type', 'college') // Fallback to global college pool
+                    .eq('period', dbPeriod)
+                    .order('rank', { ascending: true });
+
+                if (!fallbackError && fallbackData && fallbackData.length > 0) {
+                    data = fallbackData as any[];
+                }
+            }
+
             let filteredData: any[] = [...data];
 
-            // Server returns all entries for a rank_type; filter client-side to
-            // the logged-in student's context. These UUIDs come from the `students`
-            // table join and must match what was stored during profile creation.
-            if (activeTab === 'department' && student.department_id) {
-                filteredData = filteredData.filter(d => (d.student as any)?.department_id === student.department_id);
-            } else if (activeTab === 'year' && student.year_id) {
-                filteredData = filteredData.filter(d => (d.student as any)?.year_id === student.year_id);
-            } else if (activeTab === 'section' && student.section_id) {
-                filteredData = filteredData.filter(d => (d.student as any)?.section_id === student.section_id);
-            } else if (activeTab === 'team') {
-                // team leaderboard: look up student's team, then filter by team roster
-                if (student.id) {
-                    const { data: tmData, error: tmError } = await supabase
-                        .from('team_members')
-                        .select('team_id')
-                        .eq('student_id', student.id)
-                        .maybeSingle();
-
-                    if (tmError) throw tmError;
-                    const tm = tmData as any;
-
-                    if (tm?.team_id) {
-                        const { data: rosterData, error: rosterError } = await supabase
-                            .from('team_members')
-                            .select('student_id')
-                            .eq('team_id', tm.team_id);
-
-                        if (rosterError) throw rosterError;
-                        const validIds = new Set((rosterData as any[]).map(r => r.student_id));
-                        filteredData = filteredData.filter(d => validIds.has(d.student_id));
-                    } else {
-                        filteredData = []; // Student is not in any team
-                    }
+            // Filter down to the student's context for sub-group tabs.
+            if (activeTab === 'department') {
+                const targetDeptId = student.department_id;
+                if (targetDeptId) {
+                    filteredData = filteredData.filter(d => d.student?.department_id === targetDeptId);
                 }
+            } else if (activeTab === 'year') {
+                const targetYearId = student.year_id;
+                if (targetYearId) {
+                    filteredData = filteredData.filter(d => d.student?.year_id === targetYearId);
+                }
+            } else if (activeTab === 'section') {
+                const targetSectionId = student.section_id;
+                if (targetSectionId) {
+                    filteredData = filteredData.filter(d => d.student?.section_id === targetSectionId);
+                }
+            } else if (activeTab === 'team' && myTeamId) {
+                // Fetch roster for this team and filter locally
+                const { data: rosterData, error: rosterError } = await supabase
+                    .from('team_members')
+                    .select('student_id')
+                    .eq('team_id', myTeamId);
+
+                if (!rosterError && rosterData) {
+                    const validIds = new Set((rosterData as any[]).map(r => r.student_id));
+                    filteredData = data.filter(d => validIds.has(d.student_id));
+                }
+            }
+
+            // Recalculate local ranks if we did a fallback or sub-filtering
+            if (activeTab !== 'college') {
+                filteredData = filteredData
+                    .sort((a, b) => (b.total_solved || 0) - (a.total_solved || 0))
+                    .map((item, index) => ({ ...item, rank: index + 1 }));
             }
 
             setLeaderboard(filteredData);
         } catch (error: any) {
-            console.error('Leaderboard fetch error:', error?.message || error)
-            setFetchError('Could not load rankings. Check your connection.')
+            console.error('Leaderboard fetch error:', error?.message || error);
+            setFetchError('Could not load rankings. Check your connection.');
         } finally {
-            setLoading(false)
+            setLoading(false);
         }
     }
+
 
     // --- Computed Values ---
 
@@ -148,13 +205,13 @@ export default function LeaderboardScreen({ navigation, route, student: propStud
 
     const displayData = useMemo(() => {
         if (viewMode === 'top') {
-            return leaderboard.slice(0, 50);
+            return (leaderboard as any[]).slice(0, 50);
         } else {
-            if (!myEntry) return leaderboard.slice(0, 50);
-            const myIndex = leaderboard.findIndex(item => item.student_id === myEntry.student_id);
+            if (!myEntry) return (leaderboard as any[]).slice(0, 50);
+            const myIndex = (leaderboard as any[]).findIndex(item => item.student_id === (myEntry as any).student_id);
             const start = Math.max(0, myIndex - 4);
             const end = Math.min(leaderboard.length, myIndex + 6);
-            return leaderboard.slice(start, end);
+            return (leaderboard as any[]).slice(start, end);
         }
     }, [leaderboard, viewMode, myEntry]);
 

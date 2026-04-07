@@ -4,7 +4,6 @@ import { Database } from './database.types'
 // Support both Expo-prefixed and standard environment variables
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || ''
 const supabaseKey =
-  process.env.SUPABASE_SERVICE_ROLE_KEY || // Priority for server-side/admin tasks
   process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
   process.env.SUPABASE_ANON_KEY ||
   ''

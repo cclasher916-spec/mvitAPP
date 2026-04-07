@@ -151,3 +151,43 @@ SELECT id FROM departments WHERE hod_id = auth.uid()
 
 CREATE POLICY "Leaderboards are public" ON leaderboard_cache
 FOR SELECT USING (true);
+
+-- ──────────────────────────────────────────────────────────────
+-- agent_tasks
+-- Written by the Autonomous Python Agent (supabase_bridge.py)
+-- Readable by students directly inside the Mobile App
+-- ──────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS agent_tasks (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    student_id   UUID NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+    title        TEXT NOT NULL,
+    description  TEXT,
+    platform     TEXT NOT NULL DEFAULT 'leetcode',
+    problem_url  TEXT,
+    difficulty   TEXT,
+    status       TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'completed', 'failed')),
+    assigned_at  TIMESTAMP WITH TIME ZONE DEFAULT now(),
+    deadline_at  TIMESTAMP WITH TIME ZONE,
+    completed_at TIMESTAMP WITH TIME ZONE
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_tasks_student ON agent_tasks(student_id);
+CREATE INDEX IF NOT EXISTS idx_agent_tasks_status  ON agent_tasks(status);
+
+ALTER TABLE agent_tasks ENABLE ROW LEVEL SECURITY;
+
+-- Students can only see their own tasks
+CREATE POLICY "Students can view their AI tasks" ON agent_tasks
+FOR SELECT USING (student_id IN (SELECT id FROM students WHERE user_id = auth.uid()));
+
+-- Only the service role (Python Agent) can insert/update tasks — no user can write directly
+CREATE POLICY "Service role manages agent tasks" ON agent_tasks
+FOR ALL USING (auth.role() = 'service_role');
+
+-- Allow students to mark their tasks as completed
+CREATE POLICY "Students can complete their own tasks" ON agent_tasks
+FOR UPDATE USING (
+    student_id IN (SELECT id FROM students WHERE user_id = auth.uid())
+) WITH CHECK (
+    status = 'completed'
+);

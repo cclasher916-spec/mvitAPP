@@ -9,15 +9,36 @@ export interface PlatformStats {
     codechef: number
     codeforces: number
     hackerrank: number
+    skillrack: number
+    github: number
 }
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
 export class ScraperService {
+    static extractUsername(url: string, domain: string): string {
+        if (!url) return ''
+        let username = url.trim()
+        if (username.includes(domain)) {
+            // e.g. https://leetcode.com/u/user/ or https://github.com/user
+            let match;
+            if (domain === 'leetcode.com') match = username.match(/\/u\/([^\/]+)/);
+            else match = username.match(new RegExp(`${domain}\\/([^\\/]+)`));
+
+            if (match && match[1]) return match[1];
+
+            const parts = username.replace(/\/$/, '').split('/')
+            username = parts[parts.length - 1]
+        }
+        return username
+    }
+
     /**
     * Fetch solved count from LeetCode GraphQL API
     */
-    static async fetchLeetCodeStats(username: string): Promise<number> {
+    static async fetchLeetCodeStats(usernameOrUrl: string): Promise<number> {
+        const username = this.extractUsername(usernameOrUrl, 'leetcode.com');
+        if (!username) return 0;
         try {
             const response = await fetch('https://leetcode.com/graphql', {
                 method: 'POST',
@@ -63,7 +84,9 @@ export class ScraperService {
     /**
     * Fetch solved count from CodeChef via API
     */
-    static async fetchCodeChefStats(username: string): Promise<number> {
+    static async fetchCodeChefStats(usernameOrUrl: string): Promise<number> {
+        const username = this.extractUsername(usernameOrUrl, 'codechef.com');
+        if (!username) return 0;
         try {
             const response = await fetch(`https://codechef-api.vercel.app/${username}`)
 
@@ -91,7 +114,9 @@ export class ScraperService {
     /**
     * Fetch solved count from Codeforces API (Unique accepted problems)
     */
-    static async fetchCodeforcesStats(username: string): Promise<number> {
+    static async fetchCodeforcesStats(usernameOrUrl: string): Promise<number> {
+        const username = this.extractUsername(usernameOrUrl, 'codeforces.com');
+        if (!username) return 0;
         try {
             const response = await fetch(
                 `https://codeforces.com/api/user.status?handle=${username}`
@@ -117,7 +142,9 @@ export class ScraperService {
     * NOTE: HackerRank does not expose solved count cleanly anymore.
     * This currently returns badges count as an activity indicator.
     */
-    static async fetchHackerRankStats(username: string): Promise<number> {
+    static async fetchHackerRankStats(usernameOrUrl: string): Promise<number> {
+        const username = this.extractUsername(usernameOrUrl, 'hackerrank.com');
+        if (!username) return 0;
         try {
             const response = await fetch(
                 `https://www.hackerrank.com/rest/hackers/${username}`
@@ -129,6 +156,52 @@ export class ScraperService {
             console.error('HackerRank scrape error:', error)
             return 0
         }
+    }
+
+    /**
+     * Fetch programs solved from SkillRack
+     */
+    static async fetchSkillRackStats(url: string): Promise<number> {
+        if (!url || !url.startsWith('http')) return 0;
+        try {
+            const response = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+            const text = await response.text();
+
+            // Try to find the PROGRAMS SOLVED block
+            const regex = /class=["'][^"']*value["'][^>]*>\s*([\d,]+)\s*<\/div>\s*<div[^>]*class=["'][^"']*label["'][^>]*>\s*PROGRAMS SOLVED\s*<\/div>/i;
+            const match = text.match(regex);
+            if (match && match[1]) return parseInt(match[1].replace(/,/g, ''), 10);
+
+            const regex2 = /<div[^>]*class=["'][^"']*label["'][^>]*>\s*PROGRAMS SOLVED\s*<\/div>\s*<div[^>]*class=["'][^"']*value["'][^>]*>\s*([\d,]+)\s*<\/div>/i;
+            const match2 = text.match(regex2);
+            if (match2 && match2[1]) return parseInt(match2[1].replace(/,/g, ''), 10);
+
+            const wideRegex = /class=["'][^"']*value["'][^>]*>\s*([\d,]+)\s*<\/div>[\s\S]{0,100}PROGRAMS SOLVED/i;
+            const match3 = text.match(wideRegex);
+            if (match3 && match3[1]) return parseInt(match3[1].replace(/,/g, ''), 10);
+
+        } catch (e) {
+            console.error('SkillRack scrape error:', e);
+        }
+        return 0;
+    }
+
+    /**
+     * Fetch GitHub repos count
+     */
+    static async fetchGitHubStats(usernameOrUrl: string): Promise<number> {
+        const username = this.extractUsername(usernameOrUrl, 'github.com');
+        if (!username) return 0;
+        try {
+            const response = await fetch(`https://api.github.com/users/${username}`);
+            if (response.ok) {
+                const data = await response.json();
+                return data.public_repos || 0;
+            }
+        } catch (error) {
+            console.error('GitHub scrape error:', error);
+        }
+        return 0;
     }
 
     /**
@@ -149,6 +222,8 @@ export class ScraperService {
                 codechef_solved: 0,
                 codeforces_solved: 0,
                 hackerrank_solved: 0,
+                skillrack_solved: 0,
+                github_solved: 0,
             }
 
             const platformUpdates: Database['public']['Tables']['platform_accounts']['Update'][] = []
@@ -176,6 +251,14 @@ export class ScraperService {
                                 solvedCount = await this.fetchHackerRankStats(platform.username)
                                 stats.hackerrank_solved = solvedCount
                                 break
+                            case 'skillrack':
+                                solvedCount = await this.fetchSkillRackStats(platform.username)
+                                stats.skillrack_solved = solvedCount
+                                break
+                            case 'github':
+                                solvedCount = await this.fetchGitHubStats(platform.username)
+                                stats.github_solved = solvedCount
+                                break
                         }
 
                         // Collect update for platform_accounts
@@ -191,7 +274,6 @@ export class ScraperService {
 
             // Batch update platform accounts
             if (platformUpdates.length > 0) {
-                // Perform updates
                 for (const update of platformUpdates) {
                     if (update.id) {
                         await (supabase
@@ -206,39 +288,79 @@ export class ScraperService {
                 stats.leetcode_solved +
                 stats.codechef_solved +
                 stats.codeforces_solved +
-                stats.hackerrank_solved
+                stats.hackerrank_solved +
+                stats.skillrack_solved +
+                stats.github_solved
 
-            // --- STREAK CALCULATION LOGIC ---
-            // 1. Get student's previous streak and yesterday's activity
-            const [{ data: studentData }, { data: yesterdayActivity }] = await Promise.all([
+            // --- DELTA AND STREAK CALCULATION LOGIC ---
+            // 1. Get student's previous activity BEFORE today to calculate deltas
+            const { data: previousActivity } = await supabase
+                .from('daily_activity')
+                .select('*')
+                .eq('student_id', studentId)
+                .lt('activity_date', today)
+                .order('activity_date', { ascending: false })
+                .limit(1)
+                .maybeSingle()
+
+            const prevAct = previousActivity as any;
+            const prevTotals = {
+                leetcode: prevAct?.leetcode_solved || 0,
+                codechef: prevAct?.codechef_solved || 0,
+                codeforces: prevAct?.codeforces_solved || 0,
+                hackerrank: prevAct?.hackerrank_solved || 0,
+                skillrack: prevAct?.skillrack_solved || 0,
+                github: prevAct?.github_solved || 0,
+            }
+
+            // Calculate Deltas natively (prevent negative deltas if platforms glitch)
+            const deltas = {
+                leetcode: Math.max(0, stats.leetcode_solved - prevTotals.leetcode),
+                codechef: Math.max(0, stats.codechef_solved - prevTotals.codechef),
+                codeforces: Math.max(0, stats.codeforces_solved - prevTotals.codeforces),
+                hackerrank: Math.max(0, stats.hackerrank_solved - prevTotals.hackerrank),
+                skillrack: Math.max(0, stats.skillrack_solved - prevTotals.skillrack),
+                github: Math.max(0, stats.github_solved - prevTotals.github),
+            }
+
+            const dailyDelta = deltas.leetcode + deltas.codechef + deltas.codeforces + deltas.hackerrank + deltas.skillrack + deltas.github;
+
+            // 2. Get today's activity (if exists) and yesterday's to manage streak idempotency
+            const [{ data: studentData }, { data: todayActivity }, { data: yesterdayActivity }] = await Promise.all([
                 supabase.from('students').select('current_streak').eq('id', studentId).maybeSingle(),
+                supabase.from('daily_activity').select('is_active').eq('student_id', studentId).eq('activity_date', today).maybeSingle(),
                 supabase.from('daily_activity').select('is_active').eq('student_id', studentId).eq('activity_date', yesterday).maybeSingle()
             ])
 
-            let newStreak = (studentData as any)?.current_streak || 0
+            let currentStreak = (studentData as any)?.current_streak || 0
+            const wasActiveToday = (todayActivity as any)?.is_active || false
+            const isActiveToday = dailyDelta > 0
 
-            if (totalSolved > 0) {
-                // Active today
+            let newStreak = currentStreak;
+
+            // Idempotent streak resolution:
+            if (isActiveToday && !wasActiveToday) {
+                // Newly active today
                 if ((yesterdayActivity as any)?.is_active) {
-                    // Active yesterday + Active today = Increment
-                    newStreak += 1
+                    newStreak = currentStreak + 1; // Increment ongoing streak
                 } else {
-                    // Not active yesterday (or first activity) -> Start new streak
-                    newStreak = 1
+                    newStreak = 1; // Start a new streak
                 }
-            } else {
-                // Inactive today
-                if (yesterdayActivity && !(yesterdayActivity as any).is_active) {
-                    // Inactive yesterday AND Inactive today -> Break streak
-                    newStreak = 0
+            } else if (!isActiveToday && !wasActiveToday) {
+                // Not active today
+                // Check if streak should be broken (if changing from yesterday to today)
+                if (!(yesterdayActivity as any)?.is_active) {
+                    newStreak = 0; // Break streak if inactive yesterday too
                 }
             }
 
             // Update student's streak
-            await (supabase
-                .from('students') as any)
-                .update({ current_streak: newStreak })
-                .eq('id', studentId)
+            if (newStreak !== currentStreak) {
+                await (supabase
+                    .from('students') as any)
+                    .update({ current_streak: newStreak })
+                    .eq('id', studentId)
+            }
 
             // Upsert daily activity
             await (supabase
@@ -250,8 +372,17 @@ export class ScraperService {
                     codechef_solved: stats.codechef_solved,
                     codeforces_solved: stats.codeforces_solved,
                     hackerrank_solved: stats.hackerrank_solved,
+                    skillrack_solved: stats.skillrack_solved,
+                    github_solved: stats.github_solved,
                     total_solved: totalSolved,
-                    is_active: totalSolved > 0,
+                    daily_delta: dailyDelta,
+                    leetcode_delta: deltas.leetcode,
+                    codechef_delta: deltas.codechef,
+                    codeforces_delta: deltas.codeforces,
+                    hackerrank_delta: deltas.hackerrank,
+                    skillrack_delta: deltas.skillrack,
+                    github_delta: deltas.github,
+                    is_active: isActiveToday,
                     updated_at: new Date().toISOString(),
                 })
 
@@ -306,53 +437,188 @@ export class ScraperService {
     * Update leaderboard rankings
     * Pre-fetches streaks to avoid N+1 query problem
     */
+    /**
+    * Update leaderboard rankings
+    * Pre-fetches streaks to avoid N+1 query problem
+    */
+    /**
+    * Update leaderboard rankings for all time periods (daily, weekly, all_time)
+    * Pre-fetches streaks and existing ranks to track movement
+    */
     static async updateLeaderboards(): Promise<void> {
         try {
-            const today = new Date().toISOString().split('T')[0]
+            console.log('Updating leaderboard rankings...');
+            // 1. Get all students with their grouping info
+            const { data: students, error: studentsError } = await supabase
+                .from('students')
+                .select('id, current_streak, department_id, year_id, section_id');
 
-            // 1. Get all daily activity for today
+            if (studentsError) throw studentsError;
+            if (!students || students.length === 0) return;
+
+            // 1b. Get team mappings
+            const { data: teamMembers } = await supabase.from('team_members').select('student_id, team_id');
+            const teamMap = new Map<string, string>();
+            if (teamMembers) {
+                for (const tm of teamMembers as any[]) teamMap.set(tm.student_id, tm.team_id);
+            }
+
+            // 1c. Get existing leaderboard cache to lookup previous ranks
+            const { data: oldCache } = await supabase.from('leaderboard_cache').select('student_id, rank_type, period, rank');
+            const oldRankMap = new Map<string, number>(); // Key: `${student_id}-${rank_type}-${period}`
+            if (oldCache) {
+                for (const row of oldCache as any[]) {
+                    oldRankMap.set(`${row.student_id}-${row.rank_type}-${row.period}`, row.rank);
+                }
+            }
+
+            // 2. Fetch daily_activity records to compute aggregates
+            const todayDate = new Date();
+            const todayStr = todayDate.toISOString().split('T')[0];
+
+            const sevenDaysAgo = new Date();
+            sevenDaysAgo.setDate(todayDate.getDate() - 7);
+            const weeklyStr = sevenDaysAgo.toISOString().split('T')[0];
+
+            // Fetch all activity from the last 7 days for weekly/daily logic OR all the latest row for all_time
             const { data: activities, error: activityError } = await supabase
                 .from('daily_activity')
-                .select('student_id, total_solved')
-                .eq('activity_date', today)
-                .order('total_solved', { ascending: false })
+                .select('student_id, total_solved, daily_delta, activity_date')
+                .order('activity_date', { ascending: false });
 
-            if (activityError) throw activityError
-            if (!activities || (activities as any[]).length === 0) return
+            if (activityError) throw activityError;
 
-            // 2. Pre-fetch streaks for all students in this leaderboard
-            const studentIds = (activities as any[]).map(a => a.student_id)
-            const { data: students, error: streakError } = await supabase
-                .from('students')
-                .select('id, current_streak')
-                .in('id', studentIds)
+            // Map data aggregations per student
+            const statsMap = new Map<string, { allTime: number, weekly: number, daily: number }>();
 
-            if (streakError) throw streakError
+            for (const student of students as any[]) {
+                statsMap.set(student.id, { allTime: 0, weekly: 0, daily: 0 });
+            }
 
-            // Map student IDs to streaks for quick lookup
-            const streakMap = new Map((students as any[])?.map(s => [s.id, s.current_streak]) || [])
+            if (activities) {
+                for (const act of activities as any[]) {
+                    const s = statsMap.get(act.student_id);
+                    if (!s) continue;
 
-            // 3. Prepare leaderboard cache updates
-            const cacheUpdates = (activities as any[]).map((activity, index) => ({
-                student_id: activity.student_id,
-                rank_type: 'college',
-                period: 'daily',
-                rank: index + 1,
-                total_solved: activity.total_solved,
-                streak: streakMap.get(activity.student_id) || 0,
-                last_updated: new Date().toISOString()
-            }))
+                    // All-Time: use MAX total_solved across ALL records.
+                    // Do NOT use latest-date row only — it can be lower due to data spikes/resets.
+                    // Problems are cumulative (never un-solved), so MAX is the true lifetime count.
+                    const actTotal = act.total_solved || 0;
+                    if (actTotal > s.allTime) {
+                        s.allTime = actTotal;
+                    }
 
-            // 4. Batch upsert leaderboard cache
-            const { error: upsertError } = await (supabase
-                .from('leaderboard_cache') as any)
-                .upsert(cacheUpdates)
+                    // Weekly: sum all daily_deltas from the last 7 days
+                    if (act.activity_date >= weeklyStr) {
+                        s.weekly += (act.daily_delta || 0);
+                    }
 
-            if (upsertError) throw upsertError
+                    // Daily: only today's delta
+                    if (act.activity_date === todayStr) {
+                        s.daily += (act.daily_delta || 0);
+                    }
+                }
+            }
 
-            console.log('Leaderboard updated!')
+            // 3. Helper to generate cache updates for a specific period
+            const cacheUpdates: any[] = [];
+            const now = new Date().toISOString();
+
+            const processPeriodRanks = (period: string) => {
+                const baseData = (students as any[]).map(student => ({
+                    student_id: student.id,
+                    streak: student.current_streak || 0,
+                    score: period === 'all_time' ? statsMap.get(student.id)!.allTime :
+                        period === 'weekly' ? statsMap.get(student.id)!.weekly :
+                            statsMap.get(student.id)!.daily, // daily
+                    department_id: student.department_id,
+                    year_id: student.year_id,
+                    section_id: student.section_id,
+                    team_id: teamMap.get(student.id) || null
+                }));
+
+                const generateRanks = (groupMap: Map<string, any[]>, rankType: string) => {
+                    for (const [_, members] of groupMap.entries()) {
+                        // Sort descending by score, then streak, then UUID
+                        members.sort((a, b) => {
+                            if (b.score !== a.score) return b.score - a.score;
+                            if (b.streak !== a.streak) return b.streak - a.streak;
+                            return a.student_id.localeCompare(b.student_id);
+                        });
+
+                        // Assign ranks
+                        members.forEach((member, index) => {
+                            const currentRank = index + 1;
+                            const cacheKey = `${member.student_id}-${rankType}-${period}`;
+                            // The new previous_rank is whatever rank they held *before* we ran this update
+                            const previousRank = oldRankMap.get(cacheKey) || null;
+
+                            cacheUpdates.push({
+                                student_id: member.student_id,
+                                rank_type: rankType,
+                                period: period,
+                                rank: currentRank,
+                                previous_rank: previousRank,
+                                total_solved: member.score,
+                                streak: member.streak,
+                                last_updated: now
+                            });
+                        });
+                    }
+                };
+
+                // Group Data
+                const collegeGroup = new Map<string, any[]>([['college', [...baseData]]]);
+                const deptGroup = new Map<string, any[]>();
+                const yearGroup = new Map<string, any[]>();
+                const sectionGroup = new Map<string, any[]>();
+                const teamGroup = new Map<string, any[]>();
+
+                baseData.forEach(d => {
+                    if (d.department_id) {
+                        if (!deptGroup.has(d.department_id)) deptGroup.set(d.department_id, []);
+                        deptGroup.get(d.department_id)!.push({ ...d });
+                    }
+                    if (d.year_id) {
+                        if (!yearGroup.has(d.year_id)) yearGroup.set(d.year_id, []);
+                        yearGroup.get(d.year_id)!.push({ ...d });
+                    }
+                    if (d.section_id) {
+                        if (!sectionGroup.has(d.section_id)) sectionGroup.set(d.section_id, []);
+                        sectionGroup.get(d.section_id)!.push({ ...d });
+                    }
+                    if (d.team_id) {
+                        if (!teamGroup.has(d.team_id)) teamGroup.set(d.team_id, []);
+                        teamGroup.get(d.team_id)!.push({ ...d });
+                    }
+                });
+
+                generateRanks(collegeGroup, 'college');
+                generateRanks(deptGroup, 'department');
+                generateRanks(yearGroup, 'year');
+                generateRanks(sectionGroup, 'section');
+                generateRanks(teamGroup, 'team');
+            };
+
+            // Calculate for all periods
+            processPeriodRanks('all_time');
+            processPeriodRanks('weekly');
+            processPeriodRanks('daily');
+
+            // 4. Clear old cache completely
+            await supabase.from('leaderboard_cache').delete().neq('period', 'none'); // Deletes all realistically
+
+            // 5. Batch insert
+            const BATCH_SIZE = 900;
+            for (let i = 0; i < cacheUpdates.length; i += BATCH_SIZE) {
+                const chunk = cacheUpdates.slice(i, i + BATCH_SIZE);
+                const { error: insertError } = await (supabase.from('leaderboard_cache') as any).insert(chunk);
+                if (insertError) throw insertError;
+            }
+
+            console.log(`Leaderboard updated with ${cacheUpdates.length} total ranking entries across all periods!`);
         } catch (error) {
-            console.error('Leaderboard update error:', error)
+            console.error('Leaderboard update error:', error);
         }
     }
 
