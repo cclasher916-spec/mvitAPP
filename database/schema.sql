@@ -7,7 +7,6 @@ DROP TABLE IF EXISTS teams CASCADE;
 DROP TABLE IF EXISTS platform_accounts CASCADE;
 DROP TABLE IF EXISTS students CASCADE;
 DROP TABLE IF EXISTS sections CASCADE;
-DROP TABLE IF EXISTS years CASCADE;
 DROP TABLE IF EXISTS departments CASCADE;
 DROP TABLE IF EXISTS users CASCADE;
 
@@ -27,20 +26,13 @@ hod_id UUID REFERENCES users(id) ON DELETE SET NULL,
 created_at TIMESTAMP DEFAULT now()
 );
 
-CREATE TABLE years (
-id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-year_number INT NOT NULL CHECK (year_number BETWEEN 1 AND 4),
-department_id UUID NOT NULL REFERENCES departments(id) ON DELETE CASCADE,
-created_at TIMESTAMP DEFAULT now(),
-UNIQUE(year_number, department_id)
-);
-
 CREATE TABLE sections (
 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 name TEXT NOT NULL,
-year_id UUID NOT NULL REFERENCES years(id) ON DELETE CASCADE,
+department_id UUID NOT NULL REFERENCES departments(id) ON DELETE CASCADE,
+batch TEXT NOT NULL,
 created_at TIMESTAMP DEFAULT now(),
-UNIQUE(name, year_id)
+UNIQUE(name, department_id, batch)
 );
 
 CREATE TABLE students (
@@ -49,9 +41,8 @@ user_id UUID NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
 roll_no TEXT UNIQUE NOT NULL,
 name TEXT NOT NULL,
 department_id UUID NOT NULL REFERENCES departments(id) ON DELETE CASCADE,
-year_id UUID NOT NULL REFERENCES years(id) ON DELETE CASCADE,
 section_id UUID NOT NULL REFERENCES sections(id) ON DELETE CASCADE,
-batch TEXT,
+batch TEXT NOT NULL,
 mobile TEXT,
 is_team_leader BOOLEAN DEFAULT false,
 current_streak INT DEFAULT 0,
@@ -151,6 +142,99 @@ SELECT id FROM departments WHERE hod_id = auth.uid()
 
 CREATE POLICY "Leaderboards are public" ON leaderboard_cache
 FOR SELECT USING (true);
+
+-- ──────────────────────────────────────────────────────────────
+-- AI AGENT ARCHITECTURE (Zero-Budget Optimization)
+-- ──────────────────────────────────────────────────────────────
+
+-- 1. The Immutable Interaction Ledger
+CREATE TABLE public.student_interactions (
+    interaction_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    student_id UUID NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+    problem_id VARCHAR(255) NOT NULL,
+    submission_code TEXT,
+    is_correct BOOLEAN NOT NULL,
+    execution_time_ms INTEGER,
+    ast_structural_complexity NUMERIC(5,2), -- Derived from AST parsing
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX idx_student_history ON public.student_interactions(student_id, created_at DESC);
+
+-- 2. Cognitive State Repository (ReKT Hidden States)
+CREATE TABLE public.knowledge_states (
+    student_id UUID PRIMARY KEY REFERENCES students(id) ON DELETE CASCADE,
+    current_hidden_state JSONB NOT NULL, -- Serialized tensor from the FRU framework
+    concept_mastery_scores JSONB, -- Key-value pairs (e.g., {"recursion": 0.85})
+    frustration_index NUMERIC(3,2),
+    last_updated TIMESTAMPTZ DEFAULT now()
+);
+
+-- 3. The Autonomous Recommendation Queue
+CREATE TABLE public.learning_paths (
+    path_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    student_id UUID NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+    recommended_problem_id VARCHAR(255) NOT NULL,
+    predicted_success_probability NUMERIC(4,3), 
+    justification_text TEXT, -- TurboQuant LLM-generated explanation
+    is_completed BOOLEAN DEFAULT false,
+    queued_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX idx_pending_paths ON public.learning_paths(student_id) WHERE is_completed = false;
+
+-- 4. Batching Strategy (Unlogged for performance)
+CREATE UNLOGGED TABLE public.pending_inference (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    student_id UUID NOT NULL,
+    problem_id VARCHAR(255) NOT NULL,
+    is_correct BOOLEAN,
+    ast_structural_complexity NUMERIC(5,2),
+    queued_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- ──────────────────────────────────────────────────────────────
+-- DISPATCHER LOGIC (Supabase -> GitHub Actions via pg_net)
+-- ──────────────────────────────────────────────────────────────
+
+-- Trigger function to populate the unlogged queue
+CREATE OR REPLACE FUNCTION public.queue_for_inference()
+RETURNS TRIGGER AS $$
+BEGIN
+    INSERT INTO public.pending_inference (student_id, problem_id, is_correct, ast_structural_complexity)
+    VALUES (NEW.student_id, NEW.problem_id, NEW.is_correct, NEW.ast_structural_complexity);
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER after_student_interaction
+AFTER INSERT ON public.student_interactions
+FOR EACH ROW EXECUTE FUNCTION public.queue_for_inference();
+
+-- Dispatcher (To be called by Cron or manually)
+CREATE OR REPLACE FUNCTION public.dispatch_inference_batch()
+RETURNS void AS $$
+DECLARE
+    payload_body JSONB;
+    request_id BIGINT;
+BEGIN
+    SELECT jsonb_agg(row_to_json(p)) INTO payload_body
+    FROM public.pending_inference p;
+
+    IF payload_body IS NOT NULL THEN
+        SELECT net.http_post(
+            url := 'https://api.github.com/repos/<YOUR_GITHUB_OWNER>/<YOUR_REPO>/dispatches',
+            headers := '{"Authorization": "Bearer <YOUR_GITHUB_PAT>", "Accept": "application/vnd.github+json"}'::jsonb,
+            body := jsonb_build_object(
+                'event_type', 'process_inference_batch',
+                'client_payload', jsonb_build_object('batch_data', payload_body)
+            )
+        ) INTO request_id;
+
+        DELETE FROM public.pending_inference;
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
 
 -- ──────────────────────────────────────────────────────────────
 -- agent_tasks

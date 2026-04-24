@@ -1,29 +1,52 @@
-name: Daily Scraper Sync
+name: MVIT Coding Tracker Engine
 
 on:
   schedule:
-    - cron: '0 2 * * *'   # Runs daily at 2:00 AM UTC (7:30 AM IST)
-  workflow_dispatch:      # Allows manual trigger from GitHub UI
+    - cron: '0 2 * * *'   # Daily maintenance & global sync
+  workflow_dispatch:      # Manual trigger
+  repository_dispatch:    # Triggered by Supabase pg_net for AI Inference
+    types: [process_inference_batch]
 
 jobs:
-  sync:
+  # 1. Scraper Job (Legacy/Daily)
+  daily_sync:
+    if: github.event_name != 'repository_dispatch'
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '18'
           cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
+      - run: npm ci
       - name: Run daily scraper
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: npm run sync:daily
+
+  # 2. AI Inference Job (Event-Driven)
+  ai_inference:
+    if: github.event.action == 'process_inference_batch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+          
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          
+      - name: Execute Inference Bridge
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+        run: python services/inference_bridge.py
+

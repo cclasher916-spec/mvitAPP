@@ -1,0 +1,4 @@
+torch
+supabase
+requests
+python-dotenv
